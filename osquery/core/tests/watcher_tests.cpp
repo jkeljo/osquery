@@ -268,6 +268,121 @@ TEST_F(WatcherTests, test_watcherrunner_watcherhealth) {
   EXPECT_EQ(2U, state.sustained_latency);
 }
 
+TEST_F(WatcherTests, test_watcherrunner_cpu_utilization_defaults) {
+  FakeWatcherRunner runner(0, nullptr, true);
+
+  // Construct a process state, assume this would have been returned from the
+  // processes table, which the WorkerRunner normally uses internally.
+  Row r;
+  int user_time = 0;
+  int system_time = 0;
+  r["parent"] = INTEGER(1);
+  r["user_time"] = INTEGER(user_time);
+  r["system_time"] = INTEGER(system_time);
+  r["resident_size"] = INTEGER(1024);
+  runner.setProcessRow({r});
+
+  // Hold the process and process state externally.
+  // Normally the WatcherRunner's entry point will persist these and use them
+  // as input to the next testable method to compare changes.
+  auto test_process = PlatformProcess::getCurrentProcess();
+  PerformanceState state;
+
+  // The measurement of latency applies an interval value normalization.
+  auto iv = std::max(getWorkerLimit(WatchdogLimitType::INTERVAL), 1_sz);
+
+  runner.isWatcherHealthy(*test_process, state);
+
+  // First test default value - max 25% CPU
+  // Use 25% of CPU for the entire interval; should be OK
+  user_time += 250 * iv;
+  r["user_time"] = INTEGER(user_time);
+  runner.setProcessRow({r});
+  EXPECT_TRUE(runner.isWatcherHealthy(*test_process, state));
+  EXPECT_EQ(0U, state.sustained_latency);
+
+  // Use just over 25% of CPU; should not be OK
+  user_time += 250 * iv + 1;
+  r["user_time"] = INTEGER(user_time);
+  runner.setProcessRow({r});
+  EXPECT_TRUE(runner.isWatcherHealthy(*test_process, state));
+  EXPECT_EQ(1U, state.sustained_latency);
+
+  // Use just over 25% of CPU split between user and system time; should not be OK
+  user_time += 125 * iv;
+  system_time += 125 * iv + 1;
+  r["user_time"] = INTEGER(user_time);
+  r["system_time"] = INTEGER(system_time);
+  runner.setProcessRow({r});
+  EXPECT_TRUE(runner.isWatcherHealthy(*test_process, state));
+  EXPECT_EQ(2U, state.sustained_latency);
+
+  // Now test restrictive default value - max 18% CPU
+  auto level = FLAGS_watchdog_level;
+  FLAGS_watchdog_level = 1;
+
+  // Use just over 18% of CPU; should not be OK
+  user_time += 180 * iv + 1;
+  r["user_time"] = INTEGER(user_time);
+  runner.setProcessRow({r});
+  EXPECT_TRUE(runner.isWatcherHealthy(*test_process, state));
+  EXPECT_EQ(3U, state.sustained_latency);
+
+  // Use just over 18% of CPU split between user and system; should not be OK
+  user_time += 90 * iv;
+  system_time += 90 * iv + 1;
+  r["user_time"] = INTEGER(user_time);
+  r["system_time"] = INTEGER(system_time);
+  runner.setProcessRow({r});
+  EXPECT_TRUE(runner.isWatcherHealthy(*test_process, state));
+  EXPECT_EQ(4U, state.sustained_latency);
+
+  FLAGS_watchdog_level = level;
+}
+
+TEST_F(WatcherTests, test_watcherrunner_latency_defaults) {
+  FakeWatcherRunner runner(0, nullptr, true);
+
+  // Construct a process state, assume this would have been returned from the
+  // processes table, which the WorkerRunner normally uses internally.
+  Row r;
+  int user_time = 0;
+  // Must make it think the process is a child of the watcher
+  r["parent"] = INTEGER(PlatformProcess::getCurrentProcess()->pid());
+  r["user_time"] = INTEGER(user_time);
+  r["system_time"] = INTEGER(0);
+  r["resident_size"] = INTEGER(1024);
+  runner.setProcessRow({r});
+
+  // Hold the process and process state externally.
+  // Normally the WatcherRunner's entry point will persist these and use them
+  // as input to the next testable method to compare changes.
+  auto& test_process = Watcher::get().getWorker();
+  PerformanceState& state = Watcher::get().getState(test_process);
+
+  // The measurement of latency applies an interval value normalization.
+  auto iv = std::max(getWorkerLimit(WatchdogLimitType::INTERVAL), 1_sz);
+
+  // Now test duration - 9 seconds
+  int max_intervals = 9 / iv;
+  for (int i = 0; i <= max_intervals; i++) {
+    auto status = runner.isChildSane(test_process);
+    if (i < max_intervals) {
+      EXPECT_TRUE(status);
+      EXPECT_EQ("OK", status.getMessage());
+    } else {
+      EXPECT_FALSE(status);
+    }
+    EXPECT_EQ(i, state.sustained_latency);
+    user_time += 1000 * iv; // Definitely exceed the allowance
+    r["user_time"] = INTEGER(user_time);
+    runner.setProcessRow({r});
+  }
+
+  Watcher::get().reset(test_process);
+  EXPECT_EQ(0, state.user_time);
+}
+
 TEST_F(WatcherTests, test_watcherrunner_unhealthy_delay) {
   FakeWatcherRunner runner(0, nullptr, true);
 
@@ -286,7 +401,7 @@ TEST_F(WatcherTests, test_watcherrunner_unhealthy_delay) {
   runner.setProcessRow({r});
 
   // Check the fake process sanity, which records the state at t=0.
-  EXPECT_TRUE(runner.isChildSane(fake_test_process));
+  EXPECT_EQ("OK", runner.isChildSane(fake_test_process).getMessage());
 
   // Update the fake process resident memory, make it unhealthy.
   r["resident_size"] = INTEGER(1024 * 1024 * 1024);

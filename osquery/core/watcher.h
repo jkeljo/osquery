@@ -244,6 +244,7 @@ class Watcher : private boost::noncopyable {
 
  private:
   friend class WatcherRunner;
+  FRIEND_TEST(WatcherTests, test_watcherrunner_latency_defaults);
 };
 
 /**
@@ -355,6 +356,8 @@ class WatcherRunner : public InternalRunnable {
   FRIEND_TEST(WatcherTests, test_watcherrunner_loop_failure);
   FRIEND_TEST(WatcherTests, test_watcherrunner_loop_disabled);
   FRIEND_TEST(WatcherTests, test_watcherrunner_watcherhealth);
+  FRIEND_TEST(WatcherTests, test_watcherrunner_cpu_utilization_defaults);
+  FRIEND_TEST(WatcherTests, test_watcherrunner_latency_defaults);
   FRIEND_TEST(WatcherTests, test_watcherrunner_unhealthy_delay);
 };
 
